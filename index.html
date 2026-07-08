@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cache — IndexedDB event cache demo</title>
+<link rel="stylesheet" href="https://nostr-client.github.io/theme/theme.css">
+<style>
+  body { max-width: 42rem; margin: 2.5rem auto; padding: 0 1.2rem 4rem; }
+  h1 { font-size: 1.4rem; } h1 a { text-decoration: none; }
+  .row { display: flex; gap: .8rem; align-items: center; flex-wrap: wrap; margin: 1rem 0; }
+  #stats { font-family: var(--nc-mono); font-size: .85rem; color: var(--nc-soft); }
+</style>
+</head>
+<body>
+<h1><a href="https://github.com/nostr-client/cache">nostr-client / cache</a></h1>
+<p class="nc-muted">This page wraps the shared pool with
+<code>withCache(withVerify(pool))</code> before loading the feed — so profile
+lookups hit IndexedDB first, and every verified event you see is stored.
+<strong>Reload the page</strong>: names and avatars appear instantly from
+cache while the network catches up.</p>
+
+<div class="row">
+  <span id="stats">cache: …</span>
+  <button class="nc-btn-ghost" id="clear">Clear cache</button>
+</div>
+
+<nostr-feed limit="15"></nostr-feed>
+
+<script type="module">
+  import { Pool } from 'https://nostr-client.github.io/pool/pool.js'
+  import { withVerify } from 'https://nostr-client.github.io/verify/verify.js'
+  import { withCache, cacheStats, clearCache } from './cache.js'
+
+  globalThis.__nostrClientPool = withCache(withVerify(new Pool()))
+  await import('https://nostr-client.github.io/feed/feed.js')
+
+  const stats = document.getElementById('stats')
+  async function refresh() {
+    const { events, replaceable } = await cacheStats()
+    stats.textContent = `cache: ${events} events, ${replaceable} profiles/lists`
+  }
+  document.getElementById('clear').onclick = async () => { await clearCache(); refresh() }
+  refresh()
+  setInterval(refresh, 3000)
+</script>
+</body>
+</html>
