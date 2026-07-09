@@ -10,7 +10,13 @@
  *   - get({ ids: [id] })            → instant if cached (events are immutable)
  *   - get({ kinds:[0], authors:[pk] }) and other replaceable lookups
  *     (profiles, contact lists, relay lists) → served from cache instantly,
- *     refreshed from the network in the background (stale-while-revalidate)
+ *     refreshed from the network in the background (stale-while-revalidate);
+ *     pass { onUpdate } to hear about a newer event when the refresh lands,
+ *     or { fresh: true } to skip the cache (mutation flows must not build
+ *     on stale data)
+ *   - subscribe({ kinds, authors }) on replaceable kinds → cached events are
+ *     replayed into onEvent immediately (relay name 'cache'), then the live
+ *     relay stream refines them
  *   - everything else passes through untouched
  *
  * Compose with verify so only verified events are ever cached:
@@ -80,6 +86,9 @@ export function withCache(pool) {
   if (typeof indexedDB === 'undefined') return pool
 
   return {
+    // marker: this pool may serve stale data; mutation flows can check it
+    // and re-confirm with { fresh: true } before building on a read
+    cached: true,
     get urls() { return pool.urls },
     get relays() { return pool.relays },
     addRelay: (url) => pool.addRelay(url),
@@ -87,10 +96,33 @@ export function withCache(pool) {
     close: () => pool.close(),
 
     subscribe(filters, { onEvent, onEose, relays } = {}) {
-      return pool.subscribe(filters, {
+      if (!Array.isArray(filters)) filters = [filters]
+      let closed = false
+      const sub = pool.subscribe(filters, {
         relays, onEose,
         onEvent: (event, relay) => { storeEvent(event); onEvent?.(event, relay) },
       })
+      // Replay cached replaceable events immediately (marked relay 'cache'),
+      // so streamed consumers paint stale data now and refine as relays
+      // answer. Only for filters that are exactly kinds+authors(+limit):
+      // anything else (ids, tags, since/until) could replay a non-match.
+      if (onEvent) {
+        ;(async () => {
+          for (const f of filters) {
+            if (!f.kinds?.length || !f.authors?.length) continue
+            if (!f.kinds.every(isReplaceable)) continue
+            if (!Object.keys(f).every((k) => k === 'kinds' || k === 'authors' || k === 'limit')) continue
+            for (const kind of f.kinds) {
+              for (const author of f.authors) {
+                if (closed) return
+                const cached = await idbGet(REPLACEABLE, kind + ':' + author)
+                if (cached && !closed) onEvent(cached, 'cache')
+              }
+            }
+          }
+        })().catch(() => {})
+      }
+      return { close: () => { closed = true; sub.close() } }
     },
 
     async list(filters, opts) {
@@ -100,6 +132,14 @@ export function withCache(pool) {
     },
 
     async get(filter, opts) {
+      // opts.fresh: skip the cache, ask the network (still stores the result).
+      // Mutation flows need this — building an update on a stale cached
+      // contact list would silently drop changes made elsewhere.
+      if (opts?.fresh) {
+        const event = await pool.get(filter, opts)
+        if (event) storeEvent(event)
+        return event
+      }
       // immutable by-id lookup: cache is authoritative
       if (filter.ids?.length === 1 && Object.keys(filter).length <= 2) {
         const cached = await idbGet(EVENTS, filter.ids[0])
@@ -108,7 +148,8 @@ export function withCache(pool) {
         if (event) storeEvent(event)
         return event
       }
-      // replaceable single-author lookup: stale-while-revalidate
+      // replaceable single-author lookup: stale-while-revalidate;
+      // opts.onUpdate(event) fires if the background refresh finds newer
       if (
         filter.kinds?.length === 1 && isReplaceable(filter.kinds[0]) &&
         filter.authors?.length === 1
@@ -119,7 +160,12 @@ export function withCache(pool) {
           if (event) storeEvent(event)
           return event
         })
-        if (cached) { refresh.catch(() => {}); return cached }
+        if (cached) {
+          refresh.then((event) => {
+            if (event && event.created_at > cached.created_at) opts?.onUpdate?.(event)
+          }).catch(() => {})
+          return cached
+        }
         return refresh
       }
       const event = await pool.get(filter, opts)

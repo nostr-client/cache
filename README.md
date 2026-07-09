@@ -26,8 +26,9 @@ globalThis.__nostrClientPool = withCache(withVerify(new Pool()))
 | lookup | behavior |
 |---|---|
 | `get({ ids: [id] })` | cache is authoritative — events are immutable |
-| `get({ kinds:[0/3/10002…], authors:[pk] })` | **stale-while-revalidate**: cached instantly, refreshed in background |
-| `subscribe` / `list` | passthrough; everything seen is stored |
+| `get({ kinds:[0/3/10002…], authors:[pk] })` | **stale-while-revalidate**: cached instantly, refreshed in background; `{ onUpdate }` fires if the refresh finds newer, `{ fresh: true }` skips the cache (mutation flows must not build on stale data) |
+| `subscribe({ kinds:[0/3/…], authors })` | cached events replayed into `onEvent` immediately (relay `'cache'`), live relay stream refines |
+| `subscribe` / `list` (anything else) | passthrough; everything seen is stored |
 | `publish` | passthrough; your own events cached immediately |
 
 No cache invalidation heuristics, no TTLs to tune, no wrong answers for
